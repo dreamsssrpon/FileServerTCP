@@ -1,3 +1,6 @@
+//I would like to express my gratitude: prabuddha34 
+//
+//
 #include <iostream>
 #include "Networker.h"
 #include <boost/thread.hpp>
@@ -5,10 +8,12 @@
 #include <fstream>
 #include <map>
 #include <boost/filesystem.hpp>
+#include <ifaddrs.h>
 
 using namespace std;
 
 #define MAX_SIZE 50
+#define MAX_PCKG_SIZE 4096
 
 #define DOWNOLOAD_DATA 1
 #define UPLOAD_DATA 2
@@ -22,6 +27,9 @@ using namespace std;
 #define DOWNOLOAD_DIR 10
 #define REGISTRATE_UPLOAD_REQ 11
 
+string src_dir = "/home/cpp/FileServer/BASE";
+uint32_t prt = 8080;
+
 int socket_fd,ep_fd;
 
 vector<int> fds;
@@ -29,7 +37,7 @@ vector<int> fds;
 int init_epoll(){
     int fd = epoll_create1(0);
 
-    if(!fd){
+    if(fd==-1){
         cout << "Error: epoll not initialized\n";
         while(1){};
     }
@@ -45,7 +53,7 @@ void add_socket(int fd,int e_fd){
 
     epoll_event ev;
     ev.data.fd = fd;
-    ev.events = EPOLLIN|EPOLLHUP;
+    ev.events = EPOLLIN|EPOLLHUP|EPOLLERR|EPOLLRDHUP;
 
     if(epoll_ctl(e_fd,EPOLL_CTL_ADD,fd,&ev)){
         cout << "Socket not added\n";
@@ -77,32 +85,69 @@ void delete_socket(int fd,int e_fd){
 boost::thread th;
 void worker_accepter(int fd_listen);
 
+vector<string> GetIPAdress(){
+    ifaddrs* addr;
+    string host_addr = "NULL";
+
+    vector<string> address;
+
+    if(getifaddrs(&addr)!=-1){
+        for(auto it = addr;it!=nullptr;it = it->ifa_next){
+            if(it->ifa_addr==nullptr||it->ifa_addr->sa_family!=AF_INET){continue;}
+
+            sockaddr_in* addres = (sockaddr_in*)it->ifa_addr;
+
+            string buffer,b;
+            buffer+= to_string(addres->sin_family) + ": ";
+            b.resize(INET_ADDRSTRLEN);
+
+            inet_ntop(AF_INET,&addres->sin_addr,b.data(),b.size());
+
+            appU32(b,buffer.size());
+            address.push_back(buffer+b);
+        }
+    }
+    return address;
+}
+
+void printServerInfo(){
+    cout << "--------------SERVER INFO--------------" << endl;
+    vector<string> adrss = GetIPAdress();
+    for(auto it:adrss ){
+        cout << it << endl;
+    }
+
+    cout << "Port: " << prt << endl;
+    cout << "Max package size: " << MAX_PCKG_SIZE << endl;
+    cout << "Source dir: " << src_dir << endl;
+
+}
+
 void init(){
     socket_fd = socket(AF_INET,SOCK_STREAM,0);
 
     sockaddr_in addr;
 
-    uint32_t port = 8080;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(prt);
 
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_family = AF_INET;
 
     if(::bind(socket_fd,(sockaddr*)&addr,sizeof(addr))){
         cout << "Error can not bind addres\n";
-        while(1){}
+        exit(-1);
     }
     if(listen(socket_fd,10)){
         cout << "Error can not change socket mode\n";
-        while(1){}
+        exit(-1);
     }
 
     ep_fd = init_epoll();
     
     th = boost::thread(worker_accepter,socket_fd);
 
+    printServerInfo();
 }
-
 string read_file(const char* pth){    
     ifstream f(pth,ios::binary);
 
@@ -159,7 +204,16 @@ void AddToFile(string path,string source){
 string get_file_section(string path,uint32_t& pos,uint32_t size){
     ifstream f(path,ios::binary|ios::ate);
 
-    uint32_t file_end = f.tellg();
+    if(!f.is_open()){
+        return "NULL";
+    }
+
+    int f_end = f.tellg();
+
+    if(f_end<=0){return "NULL";}
+
+    uint32_t file_end = f_end;
+
     f.seekg(pos,ios::beg);
     uint32_t file_ = file_end-f.tellg();
 
@@ -174,7 +228,7 @@ string get_file_section(string path,uint32_t& pos,uint32_t size){
 }
 
 uint32_t GetSize(const char* pat){
-    ifstream fs(pat);
+    ifstream fs(pat,ios::binary);
 
     fs.seekg(0,ios::end);
 
@@ -185,7 +239,6 @@ uint32_t GetSize(const char* pat){
     return s;
 }
 
-#define MAX_PCKG_SIZE 4096
 #define END_PACKAGE 100
 #define MIDDLE_PACKAGE 101
 class DataPackage{
@@ -207,25 +260,6 @@ public:
         next_id = -1;       
 
         size1 = GetSize(path.data());
-
-        /*int count = 0;
-        string source = read_file(path.data()); 
-        int size = source.size();
-        //source.resize(0);
-
-        while(size-MAX_PCKG_SIZE>0){
-            Request req(id,count,MIDDLE_PACKAGE);
-
-            req.p.append(source.data()+(count*MAX_PCKG_SIZE),MAX_PCKG_SIZE);
-            pckg.push_back(req);
-            size -= MAX_PCKG_SIZE;
-            count++;
-        }
-
-        Request req(id,count,END_PACKAGE);
-        req.p.append(source.data()+(count*MAX_PCKG_SIZE),size);
-
-        pckg.push_back(req);*/
     }
     DataPackage(vector<Request> req){
         for(int i = req.size()-1;i>=0;--i){
@@ -239,7 +273,7 @@ public:
         Request r(1,1,1);
         r.p = src;
 
-        if(src.size()<=1){
+        if(src == "NULL"){
             Request r(403,403,403);
             r.p = "ERROR: " + p;
 
@@ -394,6 +428,9 @@ void init_dir_package(string path,int fd){
 
         pckg.pckg.push_back(req);
     }
+    if(pckg.pckg.size()==0){
+        pckg.pckg.push_back(Request(0,0,END_DIR));
+    }
     pckg.pckg[pckg.pckg.size()-1].type = END_DIR;
 
     cout << "Path: " << response.p << " type " << response.type << " id " << response.id<< " pass "<< response.pass << endl; 
@@ -405,17 +442,6 @@ void init_dir_package(string path,int fd){
     add_package_to_cahce(pckg);
 }
 void init_package(int fd,string path){
-    /*if(read_file(path.data())==" "){
-        cout << "Error\n";
-
-        Request req(404,404,404);
-        req.p = "File not founded\n";
-        string msg = req.convert();
-
-        Psend(fd,msg);
-        delete_socket(fd,ep_fd);
-    }*/
-
     int pckg_id = ++ids;
     add_package_to_cahce(DataPackage(path,pckg_id));
 
@@ -430,9 +456,6 @@ void init_package(int fd,string path){
 }
 void Requester(Request req,int fid){
     if(req.type==GET_FILE_LIST){
-        cout << "User want get data list" << endl;
-        cout.flush();
-
         Psend(fid,dirs("/home/cpp/FileServer/BASE" + req.p));      
     }else if(req.type==DOWNOLOAD_DATA){
         cout << "User want download data " << req.p << endl;
@@ -447,8 +470,6 @@ void Requester(Request req,int fid){
             DeletePackage(req.id);
         }
 
-        //cout << "pack n " << pckgs[req.id].ind << "/" << pckgs[req.id].pckg.size() << " sended" << endl;
-
         string msg = r.convert();
         Psend(fid,msg);
     }else if(req.type == NEXT_FILE){
@@ -459,6 +480,7 @@ void Requester(Request req,int fid){
             rw.p = "Package deleted\n";
 
             Psend(fid,rw.convert());
+            return;
         }
 
         Request r(1,1,1);
@@ -487,15 +509,16 @@ void Requester(Request req,int fid){
 
         cout << "Upload registrated " << response.id << " path " << UP_req[response.id].p << endl;
     }else if(req.type == UPLOAD_DATA){
-        if(req.p.size()>=1024U*1024U*1024U){
+        if(!check_req(req)){
             Request req(404,404,404);
-            req.p = "Package size overload\n";
+            req.p = "Not corretly request\n";
             Psend(fid,req.convert());
 
             return;
-        }if(!check_req(req)){
+        }
+        if(GetSize(UP_req[req.id].p.data())+req.p.size()>=(1024UL*1024UL*1024UL*1024UL)){
             Request req(404,404,404);
-            req.p = "Not corretly request\n";
+            req.p = "Package size overload\n";
             Psend(fid,req.convert());
 
             return;
@@ -537,16 +560,12 @@ void handler(){
         for(int i = 0 ; i < size2;++i){
             int fd1 = evs[i].data.fd;
 
-            if(evs[i].events&EPOLLHUP){
+            if(evs[i].events&EPOLLHUP||evs[i].events&EPOLLRDHUP||evs[i].events&EPOLLERR){
                 cout << "Socket deleted " << endl;
-                //cout.flush();
                 delete_socket(fd1,ep_fd);
                 continue;
             }
-
-            //cout << "wait buffer status: "<< fd1 <<  "...";
             string m = Pread(fd1);
-            //cout << "available\n";
 
             Request r(m); 
             Requester(r,fd1);
