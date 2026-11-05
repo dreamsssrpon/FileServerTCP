@@ -77,7 +77,6 @@ void appU32(string& data,uint32_t i){//append and reserved space for U32 in bina
     memcpy(&tmp[0],&i,sizeof(uint32_t));//Copy U32 in substr
     data+=tmp;//add substr in main str
 }
-
 uint32_t readU32(uint32_t& read_pos,string read_data){//Read U32 for string in binary mode
     uint32_t buffer = 0;//reserved bytes for buffer
 
@@ -90,36 +89,6 @@ uint32_t readU32(uint32_t& read_pos,string read_data){//Read U32 for string in b
     read_pos += sizeof(uint32_t);//add 4 bytes 
     return (buffer);//returned buffer
 }
-//status defined
-
-#define S_ADMINISTRATOR 9
-#define S_BLOCKING 1
-#define S_MAX 8//My status 
-#define S_MUTE 2
-#define S_DELETEDACC 3
-
-class User{
-public:
-    string name;
-    uint32_t id,password,status;
-
-    User(){id=password=status=S_DELETEDACC;};
-    User(string n,uint32_t id1,uint32_t pass){
-        name  = n;
-        id = id1;
-        password = pass;
-    }
-
-};
-//Request types
-#define SEND 1
-#define AUTORIZ 2
-#define REGISTRATION 3
-#define EXIT 4
-#define GUA 5
-#define GETCACHE 6
-#define GMC 7
-
 class Request{
 public:
     uint32_t id,pass,type;
@@ -156,53 +125,3 @@ public:
     }
 
 };
-
-class MSG{
-public:
-    uint32_t from,id;
-    string msg;
-    MSG(){
-        from = -1;
-    }
-    MSG(uint32_t i1,uint32_t i2,string m){
-        from = i1;
-        id = i2;
-        msg = m;
-    }
-
-    string convert(){
-        string buffer;
-        uint32_t s = msg.size();
-
-        appU32(buffer,from);
-        appU32(buffer,s);
-
-        buffer+=msg;
-        return buffer;
-    }
-
-    void print(){
-        cout << from << ">: " << msg << endl;
-    }
-    string con_print(){
-        return string(to_string(from) + " >: " + msg + '\n');
-    }
-};
-
-MSG readMSG(uint32_t& pos,string d){
-    uint32_t from,size;
-
-    from = readU32(pos,d);//read sender
-    size = readU32(pos,d);//read msg size
-
-    MSG msg;
-    msg.from = from;
-
-    msg.msg.resize(size);//reserv bytes
-    memcpy(msg.msg.data(),d.data()+pos,size);//copy data 
-
-    pos+=size;
-
-    return msg;
-}
-//map<uint32_t,MSG> load_cache(string file){}
