@@ -4,6 +4,7 @@
 #include <boost/thread.hpp>
 #include <chrono>
 #include "Networker.h"
+#include <boost/process.hpp>
 
 using namespace std;
 using namespace boost;
@@ -12,6 +13,65 @@ using namespace asio;
 asio::io_context cnt;
 ip::tcp::socket skc(cnt);
 ip::tcp::endpoint ep(ip::make_address_v4("127.0.0.1"),8080);
+
+string GetName(string path){
+    string name = "";
+    for(int i = path.size()-1;i>=0;--i){
+        if(path[i]=='\\'||path[i]=='/'){
+            name.append(path.begin()+i+1,path.end());
+            return name;
+        }
+    }
+    return path;
+}
+string DeleteExt(string path){
+    string b;
+    for(int i = path.size()-1;i>=0;--i){
+        if(path[i]=='.'){
+            b.append(path.begin(),path.begin()+i);
+            return b;
+        }
+    }
+   return path;
+}
+string DeleteName(string path){
+    string b;
+    for(uint16_t i = path.size()-1;i>=0;--i){
+        if(path[i]=='\\'||path[i]=='/'){
+            b.append(path.begin(),path.begin()+i+1);
+            return b;
+        }
+    }   
+    return path;
+}
+//Pack tar -czf temp.rar -C path+BASE .
+//Unpack tar -xzf temp.rar -C source_path+GetName(dst) .
+
+void run_cmd(string cmd){
+    boost::process::v2::shell sh(cmd);
+    boost::process::v2::process pr(cnt,sh.exe(),sh.args());
+
+    pr.wait();
+}
+
+void Pack(string src,string dst){
+    string cmd = "tar -czf " + dst +".rar" + " -C "+ src;
+    cout << cmd << endl;
+    cout.flush();
+
+    boost::process::v2::shell sh(cmd);
+    boost::process::v2::process pr{cnt,sh.exe(),sh.args()};
+    pr.wait();
+}
+void Unpack(string src,string dst){
+    string cmd = "tar -xzf "+dst+".rar"+ " -C "+ src;
+    cout << cmd << endl;
+    cout.flush();
+
+    boost::process::v2::shell sh(cmd);
+    boost::process::v2::process pr{cnt,sh.exe(),sh.args()};
+    pr.wait();
+}
 
 string read_file(const char* pth){    
     ifstream f(pth,ios::binary);
@@ -83,7 +143,7 @@ void reconnect(){
     skc.connect(ep);
 }
 
-boost::thread th;
+boost::thread thr;
 boost::mutex mt;
 
 char anim[] = {'|','/','-','\\','/','-','\\'};
@@ -96,28 +156,29 @@ boost::atomic<bool> f = false;
 void animation(){
     while(f){
         cout << "\r";
-        cout << anim[ind%7] << " %" << per;
+        cout << anim[ind%6] << " %" << per;
         cout.flush();
 
-        boost::this_thread::sleep_for(boost::chrono::milliseconds(300));
+        boost::this_thread::sleep_for(boost::chrono::milliseconds(400));
         ++ind;
     }
 }
 
 void start(){
     per = 0;
+    ind = 0;
     if(f){
         return;
     }
     f = true;
-    th = boost::thread(animation);
+    thr = boost::thread(animation);
 }
 void stop(){
     if(!f){
         return;
     }
     f = false;
-    th.join();
+    thr.join();
     cout << '\r';
 }
 
@@ -213,17 +274,6 @@ void GetFilesList(string path){
 
     cout << path << endl;
 }
-string GetName(string path){
-    string name = "";
-    for(int i = path.size()-1;i>=0;--i){
-        if(path[i]=='\\'||path[i]=='/'){
-            name.append(path.begin()+i+1,path.end());
-            return name;
-        }
-    }
-    return name;
-}
-
 string BytesToMK(uint32_t bytes){    
     unordered_map<int,string> mp{
         {1024,"KB"},
@@ -255,141 +305,115 @@ void AddToFile(string path,string source){
     f.close();
 }
 
-void downoload_file(string dst,string src){
-    Request req(1,1,1);
+void RequestAnalaizer(const Request& r){
+    cout << "Type " << r.type << " pass " << r.pass << " id " << r.id << endl;
+    //cout << "Params " << r.p << endl;
+}
 
-    req.p = src;
+constexpr int MAX_CLIENT_SIZE = 30;
+constexpr int NOT_FONDED = 404;
+constexpr int DOWNOLAD_REQUEST = 0;
+constexpr int UPLOAD_REQUEST = 1;
 
-    string converted = req.convert();
-    B_send(skc,converted);
+constexpr int REG_DOWNOLOAD_REQ = 1;
+constexpr int REG_DOWNOLOADFDIR_REQ = 2;
+constexpr int REG_UPLOAD_REQ = 3;
 
-    converted = B_read(skc);
-    req = Request(converted);
-    uint32_t p = 0;
-    uint32_t segments = readU32(p,req.p);
+constexpr int GET_NEXT_FILE_FRAME = 4;
+constexpr int GET_NEXT_FILE_PATH = 5;
+constexpr int DATA_TO_UPLOAD = 6;
+constexpr int CRATE_DIRECTORY_REQ = 7;
 
-    req.p = "";
-    converted = req.convert();
+constexpr int IS_FOLDER = 9;
+constexpr int END_FILE = 10;
+constexpr int END_FOLDER = 11;
 
-    cout << BytesToMK(segments) << endl;
+void Rsend(boost::asio::ip::tcp::socket& s,Request r){
+    string msg = r.convert();
+    B_send(s,msg);
+}
+Request Rread(boost::asio::ip::tcp::socket& s){
+    string msg = B_read(s);
+    return Request(msg);
+}
 
-    Request r(1,1,1);
+void downoload_file(string src){
+    string dst = "temp.rar";
 
+    Request registrated_req(0,0,REG_DOWNOLOAD_REQ);
+    registrated_req.p = src;
+
+    Rsend(skc,registrated_req);
+    registrated_req = Rread(skc);
+
+    string cnvrt = registrated_req.convert();
+    uint32_t size = registrated_req.pass;
+
+    Request server_response;
+
+    cout << "Dwnoloading..." << endl;
     start();
-    while(r.type == 1){
-        B_send(skc,converted);
-
+    do{
+        Rsend(skc,cnvrt);
         string m = B_read(skc);
-        r = Request(m);
+        server_response = Request(m);
 
-        if(r.type!=1){
-            //reconnect();
+        if(server_response.type == NOT_FONDED){
+            cout << "Server response: " << server_response.p << endl;
+            cout << "File not downoloaded\n";
             break;
         }
+        AddToFile(dst,server_response.p);
 
-        AddToFile(dst,r.p);
-        
-        per = ceil(float(float(GetSize(dst.data()))/float(segments))*100.f);
-    }
+        cout << "Recv\n";
+        per = ceil(float(float(GetSize(dst.data()))/float(size))*100);
+    }while(server_response.type==1);
     stop();
-}
-void downoload_folder(string dst,string src){
-    string d = dst+"/"+GetName(src);
-    cout << "Current dir " << d << endl;
-    boost::filesystem::create_directory(d);
+    cout << "Done" << endl;
 
-    Request req(0,0,DOWNOLOAD_DIR);
-    req.p = src;
+    string sr = source_dir+GetName(registrated_req.p);
 
-    string msg = req.convert(),source;
-    B_send(skc,msg);
+    Unpack(sr,DeleteExt(dst));
+    run_cmd("rm -r temp.rar");
+}   
+void upload(string src){
+    cout << "Packing package...";
+    Pack(DeleteName(src)+" "+GetName(src),"temp");    
+    cout << "Done" << endl;
 
-    msg = B_read(skc);
-    req = Request(msg);
+    Request reg_upload_req(0,0,REG_UPLOAD_REQ);
+    reg_upload_req.p = src;
 
-    source = req.convert();
-    Request r;
+    Rsend(skc,reg_upload_req);
+
+    reg_upload_req = Rread(skc);
+    Request serv_response;
+
+    cout << "Uploading...\n";
+    uint32_t pos = 0;int si = GetSize("temp.rar");
+    start();
 
     do{
-        B_send(skc,source);
+        serv_response = reg_upload_req;
+        serv_response.p = get_file_section("temp.rar",pos,MAX_PCKG_SIZE);
 
-        msg = B_read(skc);
-        r = Request(msg);
+        Rsend(skc,serv_response);
 
-        if(r.type==404){break;}
-
-        if(r.pass == DIR){
-            cout << "Sub dir detected " << d+"/"+GetName(r.p) << endl;
-            downoload_folder(d,r.p);
-        }else{
-            cout << "Downoload file src " << r.p << " dst " << d+"/"+GetName(r.p) << endl;
-            downoload_file(d+"/"+GetName(r.p),r.p);
-        }      
-    }while(r.type==1);
-}
-void upload_file(string dst,string src){
-    Request req(0,0,REGISTRATE_UPLOAD_REQ);
-    req.pass = skc.native_handle();
-    req.p = dst;
-
-    cout << "DST " << dst << " SRC " << src << endl;
-
-    string msg = req.convert();
-    B_send(skc,msg);
-
-    msg = B_read(skc);
-    Request r = req = Request(msg);
-
-    string buffer;uint32_t i =0;uint32_t file_size = GetSize(src.data());
-
-    start();
-
-    while(1){
-        buffer = get_file_section(src,i,MAX_PCKG_SIZE);
-
-        r = req;
-        r.p = buffer;
-
-        B_send(skc,r.convert());
-
-        msg = B_read(skc);
-        r = Request(msg);
-        if(r.type!=1){
-            cout<< "Type " << r.type << " source " << r.p << endl;
+        if(serv_response.p.size()!=MAX_PCKG_SIZE){
             break;
         }
-        if(buffer.size()<MAX_PCKG_SIZE){
-            break;
-        }
-        per = ceil((float(i)/float(file_size))*100);
-    } 
 
+        serv_response = Rread(skc);        
+        per = int(ceilf(float(float(pos)/float(si))*100.f));
+    }while(serv_response.type == 1); 
     stop();
+    cout << "Done\n";
 
+    serv_response = reg_upload_req;
+    serv_response.type = END_FILE;
+    serv_response.p = GetName(src);//(boost::filesystem::is_directory(src)?GteName(src):GetName(src));
+    Rsend(skc,serv_response);
 }
-void upload_folder(string dst,string src_dir){
-    Request r(DIR,DIR,DIR);
-    r.p = dst+GetName(src_dir);
-
-    B_send(skc,r.convert());
-    r = Request(B_read(skc));
-
-    for(auto it: boost::filesystem::directory_iterator(src_dir)){
-        if(it.is_directory()){
-            string sub_dir = dst+"/"+GetName(it.path().string())+"/";
-            cout << "Sub dir " << sub_dir << endl;
-
-            string load_dir = it.path().string()+"/";
-            cout << "Upload dir " << load_dir << endl;
-
-            upload_folder(sub_dir,load_dir);
-            continue;
-        }
-        cout << "Upload file " << it.path().string() << endl;
-        upload_file(dst+"/"+GetName(it.path().string()),it.path().string());
-    }
-}
-
 void close_connection(){
     Request req(0,0,CLOSE_CONNECTION);
 
@@ -406,8 +430,6 @@ void dirs(string path){
     }
 }
 
-string terminate_op = "TER";
-
 int main(){
     skc.connect(ep);
     
@@ -415,7 +437,6 @@ int main(){
     cout.flush();
 
     while(1){
-
         string m,p1,p2;
         cout << "Write a command: ";
         cin >> m;
@@ -426,59 +447,24 @@ int main(){
             cout << "FLIC path - print file list on yout computer in src dir\n";
             cout << "UPFO src dst - upload folder; src - folder path; dst - destination\n";
             cout << "UPFI src dst - upload file; src - your file; dst - destination file\n";
-            cout << "DOFO src dst - downoload folder; src - folder path; dst - destination\n";
+            cout << "DOFO src - downoload folder; src - folder path;\n";
             cout << "DOFI src dst - downoload file; src - your file; dst - destination file\n";
         }else if(m=="FLI"){
             cin >> p1;
-
-            if(p1==terminate_op){
-                continue;
-            }
-
             GetFilesList(p1);
         }else if(m=="FLIC"){
             cin >> p1;
-
-            if(p1==terminate_op){
-                continue;
-            }
-
             dirs(source_dir+p1);
         }
-        else if(m=="UPFO"){
-            cin >> p1>>p2;
+        else if(m=="DOFI"){
+            cin >> p1;
+            downoload_file(p1);
+        }else if(m=="UPFI"){
+            cin >> p1;
 
-            if(p1==terminate_op||p2==terminate_op){
-                continue;
-            }
-
-            upload_folder(p1,p2);
-        }else if(m =="UPFI"){            
-            cin >> p1>> p2;
-
-            if(p1==terminate_op||p2==terminate_op){
-                continue;
-            }
-
-            upload_file(p1,p2);
-        }else if(m=="DOFI"){
-            cin >> p1>>p2;
-
-            if(p1==terminate_op||p2==terminate_op){
-                continue;
-            }
-
-            downoload_file(p1,p2);
-        }else if(m=="DOFO"){
-            cin >> p1 >> p2;
-
-            if(p1==terminate_op){
-                continue;
-            }
-
-            downoload_folder(p1,p2);
+            upload(p1);
         }else{
-            cout << "unditifed command\n";
+            cout << "Unditifed command\n";
         }
 
     }

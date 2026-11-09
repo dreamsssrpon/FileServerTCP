@@ -1,5 +1,5 @@
 //I would like to express my gratitude: prabuddha34 
-//
+//I from Russia also i can not speak English very well
 //
 #include <iostream>
 #include "Networker.h"
@@ -9,30 +9,12 @@
 #include <map>
 #include <boost/filesystem.hpp>
 #include <ifaddrs.h>
+#include <boost/process.hpp>
+#include <boost/system.hpp>
 
 using namespace std;
 
-#define MAX_SIZE 50
-#define MAX_PCKG_SIZE 4096
-
-#define DOWNOLOAD_DATA 1
-#define UPLOAD_DATA 2
-#define DELETE_SESSIA 3
-#define GET_FILE_LIST 4
-#define NEXT 5
-#define CLOSE_CONNECTION 6
-#define NEXT_FILE 7
-#define DIR 8
-#define END_DIR 9
-#define DOWNOLOAD_DIR 10
-#define REGISTRATE_UPLOAD_REQ 11
-
-string src_dir = "/home/cpp/FileServer/BASE";
-uint32_t prt = 8080;
-
-int socket_fd,ep_fd;
-
-vector<int> fds;
+constexpr int MAX_PCKG_SIZE = 4096;
 
 int init_epoll(){
     int fd = epoll_create1(0);
@@ -44,48 +26,7 @@ int init_epoll(){
 
     return fd;
 }
-
-void add_socket(int fd,int e_fd){
-    if(fds.size()>=MAX_SIZE){
-        cout << "Socket not added\n";
-        return;
-    }
-
-    epoll_event ev;
-    ev.data.fd = fd;
-    ev.events = EPOLLIN|EPOLLHUP|EPOLLERR|EPOLLRDHUP;
-
-    if(epoll_ctl(e_fd,EPOLL_CTL_ADD,fd,&ev)){
-        cout << "Socket not added\n";
-        return;
-    }
-
-    cout << "Socket added\n";
-    fds.push_back(fd);
-}
-
-void delete_socket(int fd,int e_fd){
-    if(fds.size()==0){
-        cout << "Error: can not delete socket\n";
-        return;
-    }
-
-    if(epoll_ctl(e_fd,EPOLL_CTL_DEL,fd,nullptr)){
-        cout << "Error: can not delete socket\n";
-        return;
-    }
-
-    for(int i =0 ; i < fds.size();++i){
-        if(fds[i]==fd){
-            fds.erase(fds.begin()+i);
-        }
-    }
-}
-
-boost::thread th;
-void worker_accepter(int fd_listen);
-
-vector<string> GetIPAdress(){
+vector<string> GetIPAdresess(){
     ifaddrs* addr;
     string host_addr = "NULL";
 
@@ -95,10 +36,10 @@ vector<string> GetIPAdress(){
         for(auto it = addr;it!=nullptr;it = it->ifa_next){
             if(it->ifa_addr==nullptr||it->ifa_addr->sa_family!=AF_INET){continue;}
 
-            sockaddr_in* addres = (sockaddr_in*)it->ifa_addr;
+            auto addres = (sockaddr_in*)it->ifa_addr;
 
             string buffer,b;
-            buffer+= to_string(addres->sin_family) + ": ";
+            buffer+= to_string(it->ifa_name) + ": ";
             b.resize(INET_ADDRSTRLEN);
 
             inet_ntop(AF_INET,&addres->sin_addr,b.data(),b.size());
@@ -110,44 +51,60 @@ vector<string> GetIPAdress(){
     return address;
 }
 
-void printServerInfo(){
-    cout << "--------------SERVER INFO--------------" << endl;
-    vector<string> adrss = GetIPAdress();
-    for(auto it:adrss ){
-        cout << it << endl;
+string GetName(string path){
+    string name = "";
+    for(int i = path.size()-1;i>=0;--i){
+        if(path[i]=='\\'||path[i]=='/'){
+            name.append(path.begin()+i+1,path.end());
+            return name;
+        }
     }
-
-    cout << "Port: " << prt << endl;
-    cout << "Max package size: " << MAX_PCKG_SIZE << endl;
-    cout << "Source dir: " << src_dir << endl;
-
+    return path;
+}
+string DeleteName(string path){
+    string b;
+    for(uint16_t i = path.size()-1;i>=0;--i){
+        if(path[i]=='\\'||path[i]=='/'){
+            b.append(path.begin(),path.begin()+i+1);
+            return b;
+        }
+    }   
+    return path;
+}
+string DeleteExt(string path){
+    string b;
+    for(int i = path.size()-1;i>=0;--i){
+        if(path[i]=='.'){
+            b.append(path.begin(),path.begin()+i);
+            return b;
+        }
+    }   
+    return path;
 }
 
-void init(){
-    socket_fd = socket(AF_INET,SOCK_STREAM,0);
+boost::asio::io_context cnt;
+void run_cmd(string cmd){
+    boost::process::v2::shell sh(cmd);
+    boost::process::v2::process pr(cnt,sh.exe(),sh.args());
 
-    sockaddr_in addr;
-
-    addr.sin_port = htons(prt);
-
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_family = AF_INET;
-
-    if(::bind(socket_fd,(sockaddr*)&addr,sizeof(addr))){
-        cout << "Error can not bind addres\n";
-        exit(-1);
-    }
-    if(listen(socket_fd,10)){
-        cout << "Error can not change socket mode\n";
-        exit(-1);
-    }
-
-    ep_fd = init_epoll();
-    
-    th = boost::thread(worker_accepter,socket_fd);
-
-    printServerInfo();
+    pr.wait();
 }
+
+void Pack(string src,string dst){
+    string cmd = "tar -czf "+dst+".rar"+" -C "+src;
+    cout << cmd << endl;
+    cout.flush();
+
+    run_cmd(cmd);
+}
+void Unpack(string src,string dst){
+    string cmd = "tar -xzf " + dst+ " -C "+ src;
+    cout << cmd << endl;
+    cout.flush();
+
+    run_cmd(cmd);
+}
+
 string read_file(const char* pth){    
     ifstream f(pth,ios::binary);
 
@@ -193,7 +150,7 @@ void AddToFile(string path,string source){
     }    
     
     if(!f.is_open()){
-        cout << "Can not open file " << path << endl;
+        cout << "Can not open file path: " << path << endl;
         return;
     }
 
@@ -210,7 +167,10 @@ string get_file_section(string path,uint32_t& pos,uint32_t size){
 
     int f_end = f.tellg();
 
-    if(f_end<=0){return "NULL";}
+    if(f_end<=0){
+        cout << "Can not get a end pos int file\n";
+        return "NULL";
+    }
 
     uint32_t file_end = f_end;
 
@@ -238,13 +198,17 @@ uint32_t GetSize(const char* pat){
     fs.close();
     return s;
 }
+void RequestAnalaizer(const Request& r){
+    cout << "Type " << r.type << " pass " << r.pass << " id " << r.id << endl;
+    //cout << "Params " << r.p << endl;
+}
 
 #define END_PACKAGE 100
 #define MIDDLE_PACKAGE 101
 class DataPackage{
 public:
     vector<Request> pckg;
-    int id,next_id;
+    int id;
 
     uint32_t size1,ind;
     string source,p;
@@ -255,9 +219,7 @@ public:
         p = path;
 
         id = id1;
-        ind = 0;
-
-        next_id = -1;       
+        ind = 0;      
 
         size1 = GetSize(path.data());
     }
@@ -270,9 +232,8 @@ public:
     Request next(){
         string src = get_file_section(p,ind,MAX_PCKG_SIZE);
 
-        Request r(1,1,1);
+        Request r(1,1,(src.size()==MAX_PCKG_SIZE?1:0));
         r.p = src;
-
         if(src == "NULL"){
             Request r(403,403,403);
             r.p = "ERROR: " + p;
@@ -285,7 +246,7 @@ public:
         Request r;
 
         if(ind>=pckg.size()){
-            r =Request(404,404,404);
+            r = Request(404,404,404);
             r.p = "ERROR\n";
         }else{
             r = pckg[ind++];
@@ -294,301 +255,327 @@ public:
         return r;
     }
 };
-boost::mutex mt;
 
-bool accepted = false;
-int a_fd = -1;
-
-void worker_accepter(int fd_listen){
-    mt.lock();
-    accepted = false;
-    a_fd = -1;
-    mt.unlock();
-
-    a_fd = accept(fd_listen,NULL,NULL);
-
-    mt.lock();
-    accepted = true;
-    mt.unlock();
-}
-int accepter(){
-    if(accepted){
-        th.join();
-
-        int new_fd = a_fd;
-        th = boost::thread(worker_accepter,socket_fd);
-
-        return new_fd;
-    }else{
-        return -1;
-    }
-}
-
-string dirs(string path){
-    string buffer;
-
-    try{
-        for(auto it : boost::filesystem::recursive_directory_iterator(path)){
-            buffer += it.path().string()+"\n";
-        }
-    }catch(boost::filesystem::filesystem_error e){
-        cout << "Error: " << e.what() << endl;
-    }
-
-    cout << buffer  << " end \n";
-    return buffer;
-}
-vector<string> dirs_PS(string path){
-    vector<string> buffer;
-
-    try{
-        for(auto it : boost::filesystem::recursive_directory_iterator(path)){
-            if(it.is_directory()){
-                continue;
-            }
-            buffer.push_back(it.path().string()+"\n");
-        }
-    }catch(boost::filesystem::filesystem_error e){
-        cout << "Error: " << e.what() << endl;
-    }
-    return buffer;
-}
-
-map<int,DataPackage> pckgs;
-int ids = 0;
-
-map<int,Request> UP_req;
-int up_ids = 0;
-
-bool check_req(Request req){
-    auto it = UP_req.find(req.id);
-
-    if(it!=UP_req.end()&&req.pass==(*it).second.pass){
-        return true;
-    }
-    return false;
-}
-void add_UP_req(Request r){
-    if(check_req(r)){return;}
-
-    UP_req[r.id] = r;
-}
-void delete_UP_req(Request r){
-    if(!check_req(r)){return;}
-
-    auto it = UP_req.find(r.id);
-    UP_req.erase(it);
-}
-bool check_id(int id){
-    auto it = pckgs.find(id);
-
-    if(it!=pckgs.end()){
-        return true;
-    }
-    return false;
-}
-void add_package_to_cahce(DataPackage pckg){
-    if(check_id(pckg.id)){return;}
-
-    pckgs[pckg.id] = pckg;
-}
-DataPackage GetPackage(int id){
-    if(!check_id(id)){
-        return DataPackage();
-    }
-    return pckgs[id];
-}
-void DeletePackage(int id){
-    if(check_id(id)){
-        auto it = pckgs.find(id);
-        pckgs.erase(id);
-    }
-}
-Request next_req_pckg(int id){
-    if(!check_id(id)){
-        Request r(404,404,404);
-        r.p="Not founded req\n";
-        return r;
-    }
-
-    return pckgs[id].next();
-}
-void init_dir_package(string path,int fd){
-    cout << "User want downoload folder " << path << endl;
-    boost::filesystem::directory_iterator iter(path);
-
-    Request response(++ids,0,NEXT_FILE);
-        
-    DataPackage pckg(path,ids);
-    
-    Request req;
-    for(auto it : iter){
-        req = Request(ids,(it.is_directory()?DIR:0),0);
-        req.p = it.path().string();
-
-        pckg.pckg.push_back(req);
-    }
-    if(pckg.pckg.size()==0){
-        pckg.pckg.push_back(Request(0,0,END_DIR));
-    }
-    pckg.pckg[pckg.pckg.size()-1].type = END_DIR;
-
-    cout << "Path: " << response.p << " type " << response.type << " id " << response.id<< " pass "<< response.pass << endl; 
-    for(int i = 0; i < pckg.pckg.size();++i){
-        cout << "Path: " << pckg.pckg[i].p << " type " << pckg.pckg[i].type << " id " << pckg.pckg[i].id << " pass "<< pckg.pckg[i].pass << endl; 
-    }
-
-    Psend(fd,response.convert());
-    add_package_to_cahce(pckg);
-}
-void init_package(int fd,string path){
-    int pckg_id = ++ids;
-    add_package_to_cahce(DataPackage(path,pckg_id));
-
-    Request r(pckg_id,0,NEXT);
-    appU32(r.p,GetPackage(pckg_id).size1);
-
-    cout << "File size in bytes: " << GetPackage(pckg_id).size1 << endl;
-    cout.flush();
-
+/////////////////////////////
+void Rsend(int fd,Request r){
     string msg = r.convert();
     Psend(fd,msg);
 }
-void Requester(Request req,int fid){
-    if(req.type==GET_FILE_LIST){
-        Psend(fid,dirs("/home/cpp/FileServer/BASE" + req.p));      
-    }else if(req.type==DOWNOLOAD_DATA){
-        cout << "User want download data " << req.p << endl;
-        init_package(fid,req.p);
-    }else if(req.type == DOWNOLOAD_DIR){
-        init_dir_package(req.p,fid);
-    }
-    else if(req.type == NEXT){
-        Request r = next_req_pckg(req.id);
+Request Rread(int fd){
+    string msg = Pread(fd);
+    return Request(msg);
+}
+constexpr int MAX_CLIENT_SIZE = 30;
+constexpr int NOT_FONDED = 404;
+constexpr int DOWNOLAD_REQUEST = 0;
+constexpr int UPLOAD_REQUEST = 1;
 
-        if(r.type == 403){
-            DeletePackage(req.id);
-        }
+constexpr int REG_DOWNOLOAD_REQ = 1;
+constexpr int REG_DOWNOLOADFDIR_REQ = 2;
+constexpr int REG_UPLOAD_REQ = 3;
 
-        string msg = r.convert();
-        Psend(fid,msg);
-    }else if(req.type == NEXT_FILE){
-        cout << "User ready for get a new file\n";
+constexpr int GET_NEXT_FILE_FRAME = 4;
+constexpr int GET_NEXT_FILE_PATH = 5;
+constexpr int DATA_TO_UPLOAD = 6;
+constexpr int CRATE_DIRECTORY_REQ = 7;
 
-        if(!check_id(req.id)){
-            Request rw(404,404,404);
-            rw.p = "Package deleted\n";
+constexpr int IS_FOLDER = 9;
+constexpr int END_FILE = 10;
+constexpr int END_FOLDER = 11;
+class Cache{
+public:
 
-            Psend(fid,rw.convert());
-            return;
-        }
+    string source_path;
 
-        Request r(1,1,1);
-        string msg;
+    map<int,DataPackage> packages;
+    int ids;
+
+    map<int,Request> up_req;
+    int up_ids;
+
+    Cache(){        
+        ids = up_ids = 0;
+
+        packages = map<int,DataPackage>();
+        up_req= map<int,Request>();
+
+        source_path = "/home/cpp/FileServer/BASE";
+    };
+    Request RegDownoloadReq(string download_src){   
+        Request response(++ids,0,GET_NEXT_FILE_FRAME);
         
-        cout << "CALL\n";
-        r = pckgs[req.id].Dnext();
+        string src = DeleteName(download_src)+"temp"+to_string(ids);
+        string p = DeleteName(download_src)+" "+GetName(download_src);
+        Pack(p,src);
 
-        if(r.type == END_DIR){
-            DeletePackage(req.id);
+        src+=".rar";
+
+        DataPackage pc(src,ids);
+        packages[ids] = pc;
+
+        response.pass = GetSize(src.data());
+        response.p =" "+ GetName(download_src);
+        return response;
+    }
+    Request RegDownoloadDirReq(string path){
+        return Request();
+    }
+    Request RegUploadReq(string dst){
+        Request response(++up_ids,0,DATA_TO_UPLOAD);
+        response.p = source_path+"/"+DeleteExt(GetName(dst))+".rar";
+
+        up_req[up_ids] = response;
+        return response;
+    }
+    Request GetNext(int id){
+        if(!check(id,0)){
+            Request r(0,0,NOT_FONDED);
+            r.p =  "PACKAGE NOT FOUNDED\n";
+            return r;
         }
-
-        r.type = 1;
-        msg = r.convert();
-        Psend(fid,msg);
-    }else if(req.type == CLOSE_CONNECTION){
-        delete_socket(fid,ep_fd);
-    }else if(req.type == REGISTRATE_UPLOAD_REQ){
-        Request response(++up_ids,req.pass,UPLOAD_DATA);
-        response.p = req.p;
         
-        add_UP_req(response);
+        Request r = packages[id].next();
 
-        string msg = response.convert();
-        Psend(fid,msg);
-
-        cout << "Upload registrated " << response.id << " path " << UP_req[response.id].p << endl;
-    }else if(req.type == UPLOAD_DATA){
-        if(!check_req(req)){
-            Request req(404,404,404);
-            req.p = "Not corretly request\n";
-            Psend(fid,req.convert());
-
-            return;
-        }
-        if(GetSize(UP_req[req.id].p.data())+req.p.size()>=(1024UL*1024UL*1024UL*1024UL)){
-            Request req(404,404,404);
-            req.p = "Package size overload\n";
-            Psend(fid,req.convert());
-
-            return;
+        if(r.type!=1){
+            deleteReq(id,0);
         }
 
-        AddToFile(UP_req[req.id].p,req.p);
-
-        Request r(1,1,1);
-        Psend(fid,r.convert());
-    }else if(req.type == DIR){
-        boost::filesystem::create_directory(req.p);
-
-        Request r(1,1,1);
-        Psend(fid,r.convert());
+        return r;
     }
-    else{
-        cout <<"Error: unditifed command " << req.type << endl;
-        Request r(404,404,404);
-        r.p = "Unditifed command\n";
-        string msg = r.convert();
-        Psend(fid,msg); 
+    bool check(int id,int type){
+        if(type==0){
+            auto it = packages.find(id);
+            if(it!=packages.end()){
+                return true;
+            }
+        }
+        else{
+            auto it = up_req.find(id);
+            if(it!=up_req.end()){
+                return true;
+            }
+        }
+        return false;
     }
+    void deleteReq(int id,int type){
+        if(check(id,type)){
+            if(type==0){
+                run_cmd("rm -r "+packages[id].p);
+                packages.erase(packages.find(id));
+            }else{
+                run_cmd("rm -r "+up_req[id].p);
+                up_req.erase(up_req.find(id));
+            }
+        }
+    }
+    void reset(){
+        packages = map<int,DataPackage>();
+        up_req= map<int,Request>();
+    }
+};
+
+boost::atomic<bool> is_accepted = false;
+boost::atomic<int> accepted_fd = -1;
+
+void thread_accepter(int s_fd){
+    is_accepted = false;
+
+    accepted_fd = accept(s_fd,NULL,NULL);
+    is_accepted = true;
 }
 
-void handler(){
-    while(1){
-        int fd_conn = accepter();
+boost::thread thr;
 
-        if(fd_conn!=-1){
-            cout << "Client connected\n";
-            add_socket(fd_conn,ep_fd);
+class ConnectionHandler{
+public:
+    uint32_t server_port,max_ev;
+    int listen_fd,epoll_fd;
+    vector<int> sockets;
+
+    ConnectionHandler(){}
+    ConnectionHandler(uint32_t p,uint32_t max_clients,uint32_t max_events){
+        server_port = p;
+        max_ev = max_events;
+
+        listen_fd = socket(AF_INET,SOCK_STREAM,0);
+        epoll_fd = init_epoll();
+
+        sockaddr_in addr;
+        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(p);
+
+        if(::bind(listen_fd,(sockaddr*)&addr,sizeof(addr))){
+            cout << "Can not bind addres struct for socket\n";
+            exit(-1);
+        }
+        if(listen(listen_fd,max_clients)){
+            cout << "Can not change socket mode\n";
+            exit(-1);
         }
 
-        int ev_size = 20;
-        vector<epoll_event> evs(ev_size);
+        thr = boost::thread(thread_accepter,listen_fd);
+    }
+    void AddSocket(int fd) {
+        epoll_event ev;
+        ev.events = EPOLLIN|EPOLLHUP|EPOLLRDHUP|EPOLLERR;
+        ev.data.fd = fd;
 
-        int size2 = epoll_wait(ep_fd,evs.data(),ev_size,1);
+        if(epoll_ctl(epoll_fd,EPOLL_CTL_ADD,fd,&ev)==-1){
+            cout << "Can not add socket to epoll\n";
+            cout.flush();
+            return;
+        }
+        cout << "Socket added \n";
+        //sockets.push_back(fd);
+    }   
+    void delete_socket(int fd){
+        if(epoll_ctl(epoll_fd,EPOLL_CTL_DEL,fd,NULL)){
+            cout << "Can not delete a socket\n";
+            cout.flush();
+            return;
+        }
+        cout << "Socket deleted\n";
+        cout.flush();
+    }
+    vector<epoll_event> GetEvents(){
+        vector<epoll_event> ev;
+        ev.resize(max_ev);
 
-        for(int i = 0 ; i < size2;++i){
-            int fd1 = evs[i].data.fd;
+        int evs = epoll_wait(epoll_fd,ev.data(),max_ev,0);
 
+        if(evs==-1){
+            return vector<epoll_event>();
+        }
+
+        ev.resize(evs);
+        return ev;
+    }
+    int acceptd(){
+        if(is_accepted){
+            int fd = accepted_fd;
+            thr = boost::thread(thread_accepter,listen_fd);
+
+            sockets.push_back(fd);
+            AddSocket(fd);
+
+            return fd;
+        }
+        return -1;
+    }
+    void free(){
+        for(auto it : sockets){
+            close(it);
+        }
+        close(epoll_fd);
+        close(listen_fd);
+    }
+};  
+string dirs(string path){
+    boost::filesystem::recursive_directory_iterator iter(path);
+
+    string paths;
+    for(auto it:iter){
+        paths+= it.path().string() + "\n";
+    }   
+    return paths;
+}
+
+class FileServerTCP{
+public:
+    ConnectionHandler handl;
+    Cache cache;
+
+    FileServerTCP(){}
+    FileServerTCP(uint32_t p){  
+        handl = ConnectionHandler(p,MAX_CLIENT_SIZE,20);
+        cache = Cache();
+        printServerInfo();
+    }
+    void handle(){
+        handl.acceptd();
+
+        vector<epoll_event> evs = handl.GetEvents();
+        for(uint8_t i =0 ; i < evs.size();++i){
             if(evs[i].events&EPOLLHUP||evs[i].events&EPOLLRDHUP||evs[i].events&EPOLLERR){
-                cout << "Socket deleted " << endl;
-                delete_socket(fd1,ep_fd);
+                cout << "Delete connection " << evs[i].data.fd << endl;
+                handl.delete_socket(evs[i].data.fd);
                 continue;
             }
-            string m = Pread(fd1);
-
-            Request r(m); 
-            Requester(r,fd1);
+            Request r = Rread(evs[i].data.fd);
+            RequestHandler(evs[i].data.fd,r);
         }
     }
-}
+    void printServerInfo(){
+        cout << "--------------SERVER INFO--------------" << endl;
+        vector<string> adrss = GetIPAdresess();
+        for(auto it:adrss ){
+            cout << it << endl;
+        }
 
-void free(){
-    for(int i = 0 ; i < fds.size();++i){
-        delete_socket(fds[i],ep_fd);
+        cout << "Port: " << handl.server_port << endl;
+        cout << "Max package size: " << MAX_PCKG_SIZE << endl;
+        //cout << "Source dir: " << src_dir << endl;
     }
-}
+    void RequestHandler(int fd,Request req){
+        Request response;
 
+        if(req.type == REG_DOWNOLOAD_REQ){
+            response = cache.RegDownoloadReq(req.p);
+            cout << "----------------Dowonoload request registrated----------------\n";
+            cout <<"Downoload req info: id: " << response.id << " path: " << req.p << endl;
+        }
+        else if(req.type == GET_NEXT_FILE_FRAME){
+            response = cache.GetNext(req.id);
+        }
+        else if(req.type == REG_UPLOAD_REQ){
+            response = cache.RegUploadReq(req.p);
+            cout << "----------------Upload request registrated----------------\n";
+            cout <<"Upload req info: id: " << response.id << " path: " << req.p << endl;
+        }else if(req.type == END_FILE){
+            if(!cache.check(req.id,1)){
+                response = Request(404,404,404);
+                cout << "Upload not succesfuly\n";
+                cout.flush();
+            }
+            
+            string path = cache.up_req[req.id].p;
+
+            cout << "Upload stop\n";
+            cout.flush();
+
+            cout << "Unpacking archive...";
+            Unpack(DeleteName(path)+" "+ req.p,path);
+            cout << "Done" << endl;
+
+            cache.deleteReq(req.id,1);
+        }
+        else if(req.type == DATA_TO_UPLOAD){
+            response = Request(1,1,1);
+            if(!cache.check(req.id,1)){
+                response = Request(404,404,404);
+                req.p = "";
+            }  
+                
+            AddToFile(cache.up_req[req.id].p,req.p);            
+        }else{
+            response = Request(0,0,NOT_FONDED);
+        }
+        string resp = response.convert(); 
+        response = Request(resp);       
+        Psend(fd,resp);
+    }
+    void free(){
+        handl.free();
+    }
+};
+
+FileServerTCP serv(8080);
 int main(){
     //DataPackage pckg("/home/cpp/FileServer/data/hell.txt",2);
 
-    init();
-    cout << "Server init\n";
-    handler();
-
-    free();
-    close(socket_fd);
-    close(ep_fd);
-
+    while(1){
+        serv.handle();
+    }    
     return 0;
 }

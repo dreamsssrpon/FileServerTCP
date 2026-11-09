@@ -8,7 +8,6 @@
 
 //#define GNU_SOURCE
 #include <sys/socket.h>
-#include <sys/unistd.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
 
